@@ -1,0 +1,115 @@
+const express = require('express');
+const { v4: uuid } = require('uuid');
+const logger = require('./logger');
+const xss = require('xss');
+const bmRouter = express.Router();
+const dataParser = express.json();
+const BmService = require('./bookmark-service');
+
+const serialize = bookmark => ({
+  id: bookmark.id,
+  rating: bookmark.rating,
+  title: xss(bookmark.title),
+  url: xss(bookmark.url),
+  description: xss(bookmark.description),
+})
+
+bmRouter
+  .route('/')
+  .get((req, res, next) => {
+    BmService.getAllBookmarks(req.app.get('db'))
+      .then(bookmarks => res.json(bookmarks.map(b => ({ ...b, title: xss(b.title), url: xss(b.url), description: xss(b.description) }))))
+  })
+  .post(dataParser, (req, res, next) => {
+    const { title, rating, url, description } = req.body;
+    const id = uuid();
+
+    if (!title || !url || !rating || !description) {
+      logger.error('Failed post : Please supply a title, url , rating and description');
+      res.status(400).json({ error: 'Title and URL are required' });
+    }
+
+    const newBm = {
+      title,
+      rating,
+      url,
+      description,
+    };
+
+    BmService.insertBookmark(req.app.get('db'), newBm);
+    logger.info(`Successful post : Bookmark ${title} was added with id: ${id}`);
+    res.status(201).json({
+      ...newBm,
+      title: xss(newBm.title),
+      url: xss(newBm.url),
+      description: xss(newBm.description)
+    })
+
+
+  });
+
+bmRouter
+  .route('/:id')
+  .all((req, res, next) => {
+    const { id } = req.params;
+    BmService.getBookmarkById(req.app.get('db'), id)
+      .then(bookmark => {
+        if (!bookmark) {
+          logger.error(`Failed get book with id: ${id}`);
+          return res.status(404).json({
+            error: { message: 'Bookmark doesn\'t exist' }
+          });
+        }
+        logger.info(
+          `Successful get : Bookmark ${bookmark.title} was retrieved with id: ${bookmark.id}`
+        );
+        res.bookmark = bookmark;
+        next()
+      })
+      .catch(next);
+  })
+  .get((req, res, next) => {
+    res.json(serialize(res.bookmark))
+  })
+  .delete((req, res, next) => {
+    const { id } = req.params;
+    BmService.getBookmarkById(req.app.get('db'), id)
+      .then(bookmark => {
+        if (!bookmark) {
+          logger.error(`Failed get delete with id: ${id}`);
+          return res.status(404).json({
+            error: { message: 'Bookmark doesn\'t exist' }
+          });
+        }
+        BmService.deleteBookmark(req.app.get('db'), bookmark.id)
+          .then(() => {
+            logger.info(
+              'Successful delete : Bookmark was deleted'
+            );
+            res.status(204).end();
+          });
+      });
+  })
+  .patch(dataParser, (req, res, next) => {
+    const { title, rating, url, description } = req.body;
+    const bookmarkToUpdate = { title, rating, url, description };
+    const id = req.params.id;
+
+    const valueNum = Object.values(bookmarkToUpdate).filter(Boolean).length;
+
+    // console.log(valueNum);
+
+    if (valueNum === 0) {
+      return res.status(400).json({
+        error: { message: `Request body must contain either 'title', 'rating', 'url', or 'description'` }
+      });
+    };
+
+    BmService.updateBookmark(req.app.get('db'), id, bookmarkToUpdate)
+      .then(() => {
+        res.status(204).end()
+      })
+      .catch(next)
+  });
+
+module.exports = bmRouter;
